@@ -26,5 +26,5 @@ Build manually from Jenkins dashboard or push to GitHub triggers automatic build
 
 * **Name**: my-test-resource-group
 * **Location**: East US
-* **Tags**: CreatedBy=Jenkins, Purpose=Test
+* **Tags**: CreatedBy=Jenkins, Purpose=Test1
 
