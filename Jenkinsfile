@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // Azure configuration - No secrets needed!
-        RESOURCE_GROUP_NAME = 'my-test-resource-group-2'
+        RESOURCE_GROUP_NAME = 'my-test-resource-group-3'
         LOCATION = 'eastus'
     }
     
