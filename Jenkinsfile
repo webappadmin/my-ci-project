@@ -1,98 +1,214 @@
 pipeline {
     agent any
     
-    environment {
-        // Dynamic resource group name with branch and build number
-        RESOURCE_GROUP_NAME = "rg-${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
-        LOCATION = 'eastus'
+    parameters {
+        string(
+            name: 'RESOURCE_GROUP_NAME',
+            defaultValue: 'my-resource-group-04272026',
+            description: 'Name of the Azure resource group'
+        )
+        string(
+            name: 'LOCATION',
+            defaultValue: 'eastus',
+            description: 'Azure region (eastus, westeurope, centralus, etc.)'
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'test', 'prod'],
+            description: 'Environment type'
+        )
     }
     
     stages {
         stage('Checkout') {
             steps {
-                echo "📦 Checking out code from GitHub..."
-                echo "Current branch: ${env.BRANCH_NAME}"
-                echo "Build number: ${env.BUILD_NUMBER}"
                 checkout scm
+                echo "Building on branch: ${env.BRANCH_NAME}"
             }
         }
         
-        stage('Login to Azure using Managed Identity') {
+        stage('Install Azure CLI') {
             steps {
-                echo "🔐 Logging into Azure with Managed Identity..."
                 script {
-                    try {
-                        sh 'az login --identity'
-                        echo "✅ Successfully logged into Azure"
-                        sh 'az account show --output table'
-                    } catch (Exception e) {
-                        error "❌ Failed to login with Managed Identity: ${e.getMessage()}"
+                    if (isUnix()) {
+                        sh '''
+                            # Install Azure CLI if not present
+                            if ! command -v az &> /dev/null; then
+                                echo "Installing Azure CLI..."
+                                curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                            fi
+                            az --version
+                        '''
+                    } else {
+                        bat 'az --version'
                     }
+                }
+            }
+        }
+        
+        stage('Login with Managed Identity') {
+            steps {
+                script {
+                    if (isUnix()) {
+                        sh '''
+                            # Login using Azure VM Managed Identity
+                            az login --identity
+                            
+                            # Show current account info for verification
+                            az account show --output table
+                        '''
+                    } else {
+                        bat '''
+                            az login --identity
+                            az account show --output table
+                        '''
+                    }
+                    echo "Successfully logged in with Managed Identity"
                 }
             }
         }
         
         stage('Create Resource Group') {
             steps {
-                echo "🏗️ Creating resource group: ${RESOURCE_GROUP_NAME}"
-                sh """
-                    az group create \
-                        --name ${RESOURCE_GROUP_NAME} \
-                        --location ${LOCATION} \
-                        --tags "CreatedBy=Jenkins" "Branch=${env.BRANCH_NAME}" "BuildNumber=${env.BUILD_NUMBER}" "Timestamp=$(date +%Y-%m-%d-%H-%M-%S)"
-                """
-                echo "✅ Resource group created successfully!"
+                script {
+                    // Generate unique resource group name with timestamp
+                    def timestamp = new Date().format('yyyyMMdd-HHmmss')
+                    def rgName = "${params.RESOURCE_GROUP_NAME}-${params.ENVIRONMENT}-${timestamp}"
+                    def location = params.LOCATION
+                    
+                    echo "Creating resource group: ${rgName}"
+                    echo "Location: ${location}"
+                    echo "Environment: ${params.ENVIRONMENT}"
+                    
+                    if (isUnix()) {
+                        sh """
+                            az group create \
+                                --name ${rgName} \
+                                --location ${location} \
+                                --tags \
+                                    Environment=${params.ENVIRONMENT} \
+                                    CreatedBy=Jenkins \
+                                    BuildNumber=${env.BUILD_NUMBER} \
+                                    ManagedIdentity=true
+                        """
+                    } else {
+                        bat """
+                            az group create ^
+                                --name ${rgName} ^
+                                --location ${location} ^
+                                --tags Environment=${params.ENVIRONMENT} CreatedBy=Jenkins BuildNumber=${env.BUILD_NUMBER} ManagedIdentity=true
+                        """
+                    }
+                    
+                    // Save resource group name for later stages
+                    env.RESOURCE_GROUP_CREATED = rgName
+                    echo "✅ Resource group '${rgName}' created successfully"
+                }
             }
         }
         
         stage('Verify Resource Group') {
             steps {
-                echo "🔍 Verifying resource group..."
-                sh """
-                    az group show \
-                        --name ${RESOURCE_GROUP_NAME} \
-                        --output table
-                """
+                script {
+                    def rgName = env.RESOURCE_GROUP_CREATED
+                    
+                    echo "Verifying resource group: ${rgName}"
+                    
+                    if (isUnix()) {
+                        sh """
+                            az group show --name ${rgName} --output table
+                            az group list --query "[?name=='${rgName}']" --output table
+                        """
+                    } else {
+                        bat """
+                            az group show --name ${rgName} --output table
+                        """
+                    }
+                }
             }
         }
         
-        stage('Resource Group Details') {
+        stage('Export Resource Group Info') {
             steps {
-                echo "📋 Resource Group Details:"
-                sh """
-                    echo "Resource Group Name: ${RESOURCE_GROUP_NAME}"
-                    echo "Location: ${LOCATION}"
-                    echo "Subscription: $(az account show --query name -o tsv)"
-                    echo "Tags:"
-                    az group show --name ${RESOURCE_GROUP_NAME} --query tags -o table
-                """
+                script {
+                    def rgName = env.RESOURCE_GROUP_CREATED
+                    
+                    // Export to file for reference
+                    writeFile file: 'resource-group-info.txt', text: """
+                    Resource Group Details:
+                    ======================
+                    Name: ${rgName}
+                    Location: ${params.LOCATION}
+                    Environment: ${params.ENVIRONMENT}
+                    Build Number: ${env.BUILD_NUMBER}
+                    Created: ${new Date()}
+                    Azure Subscription: ${getSubscriptionId()}
+                    """
+                    
+                    archiveArtifacts artifacts: 'resource-group-info.txt', fingerprint: true
+                }
             }
         }
     }
     
     post {
         success {
-            echo """
-            ┌─────────────────────────────────────────────────────────┐
-            │  🎉 PIPELINE SUCCESSFUL                                 │
-            ├─────────────────────────────────────────────────────────┤
-            │  Resource Group: ${env.RESOURCE_GROUP_NAME}            │
-            │  Branch:         ${env.BRANCH_NAME}                    │
-            │  Build Number:   ${env.BUILD_NUMBER}                   │
-            │  Location:       ${env.LOCATION}                       │
-            └─────────────────────────────────────────────────────────┘
-            """
+            script {
+                echo """
+                ┌─────────────────────────────────────────┐
+                │  ✅ RESOURCE GROUP CREATED SUCCESSFULLY  │
+                └─────────────────────────────────────────┘
+                
+                Resource Group: ${env.RESOURCE_GROUP_CREATED}
+                Location: ${params.LOCATION}
+                Environment: ${params.ENVIRONMENT}
+                
+                Azure CLI commands to manage:
+                az group show --name ${env.RESOURCE_GROUP_CREATED}
+                az group delete --name ${env.RESOURCE_GROUP_CREATED}
+                """
+            }
         }
+        
         failure {
+            script {
+                error """
+                ┌─────────────────────────────────────┐
+                │  ❌ RESOURCE GROUP CREATION FAILED  │
+                └─────────────────────────────────────┘
+                
+                Please check:
+                1. VM Managed Identity is enabled
+                2. Managed Identity has Contributor role on subscription
+                3. Azure CLI version is up to date
+                4. Network connectivity to Azure
+                """
+            }
+        }
+        
+        always {
             echo """
-            ┌─────────────────────────────────────────────────────────┐
-            │  ❌ PIPELINE FAILED                                     │
-            ├─────────────────────────────────────────────────────────┤
-            │  Branch: ${env.BRANCH_NAME}                            │
-            │  Build Number: ${env.BUILD_NUMBER}                     │
-            │  Check console output for details                      │
-            └─────────────────────────────────────────────────────────┘
+            Pipeline execution completed at: ${new Date()}
+            Status: ${currentBuild.currentResult}
             """
         }
     }
+}
+
+// Helper function to check Unix/Linux environment
+def isUnix() {
+    return !env.OS || env.OS.toLowerCase().contains('linux') || env.OS.toLowerCase().contains('mac')
+}
+
+// Helper function to get subscription ID
+def getSubscriptionId() {
+    try {
+        if (isUnix()) {
+            def subId = sh(script: 'az account show --query id -o tsv', returnStdout: true).trim()
+            return subId
+        }
+    } catch (Exception e) {
+        return "Unable to fetch subscription ID"
+    }
+    return "Unknown"
 }
