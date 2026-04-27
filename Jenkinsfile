@@ -4,7 +4,7 @@ pipeline {
     parameters {
         string(
             name: 'RESOURCE_GROUP_NAME',
-            defaultValue: 'my-resource-group-04272026',
+            defaultValue: 'my-resource-group',
             description: 'Name of the Azure resource group'
         )
         string(
@@ -27,17 +27,20 @@ pipeline {
             }
         }
         
-        stage('Install Azure CLI') {
+        stage('Verify Azure CLI') {
             steps {
                 script {
                     if (isUnix()) {
                         sh '''
-                            # Install Azure CLI if not present
-                            if ! command -v az &> /dev/null; then
-                                echo "Installing Azure CLI..."
-                                curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+                            # Check if Azure CLI is installed
+                            if command -v az &> /dev/null; then
+                                az --version
+                                echo "✅ Azure CLI is already installed"
+                            else
+                                echo "❌ Azure CLI not found. Please install Azure CLI on the Jenkins agent VM"
+                                echo "Run: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
+                                exit 1
                             fi
-                            az --version
                         '''
                     } else {
                         bat 'az --version'
@@ -51,19 +54,20 @@ pipeline {
                 script {
                     if (isUnix()) {
                         sh '''
-                            # Login using Azure VM Managed Identity
+                            # Login using Azure VM Managed Identity (no secrets!)
                             az login --identity
                             
                             # Show current account info for verification
-                            az account show --output table
+                            echo "✅ Successfully logged in with Managed Identity"
+                            az account show --query "{Name:name, SubscriptionId:id}" --output table
                         '''
                     } else {
                         bat '''
                             az login --identity
+                            echo "Successfully logged in with Managed Identity"
                             az account show --output table
                         '''
                     }
-                    echo "Successfully logged in with Managed Identity"
                 }
             }
         }
@@ -116,8 +120,11 @@ pipeline {
                     
                     if (isUnix()) {
                         sh """
+                            echo "=== Resource Group Details ==="
                             az group show --name ${rgName} --output table
-                            az group list --query "[?name=='${rgName}']" --output table
+                            echo ""
+                            echo "=== Resource Group Tags ==="
+                            az group show --name ${rgName} --query tags --output table
                         """
                     } else {
                         bat """
@@ -133,6 +140,9 @@ pipeline {
                 script {
                     def rgName = env.RESOURCE_GROUP_CREATED
                     
+                    // Get subscription info
+                    def subscriptionInfo = sh(script: "az account show --query '{Name:name, ID:id}' --output json", returnStdout: true).trim()
+                    
                     // Export to file for reference
                     writeFile file: 'resource-group-info.txt', text: """
                     Resource Group Details:
@@ -142,7 +152,13 @@ pipeline {
                     Environment: ${params.ENVIRONMENT}
                     Build Number: ${env.BUILD_NUMBER}
                     Created: ${new Date()}
-                    Azure Subscription: ${getSubscriptionId()}
+                    Subscription Info: ${subscriptionInfo}
+                    
+                    Azure CLI Commands:
+                    ------------------
+                    az group show --name ${rgName}
+                    az group delete --name ${rgName}
+                    az group export --name ${rgName}
                     """
                     
                     archiveArtifacts artifacts: 'resource-group-info.txt', fingerprint: true
@@ -163,7 +179,7 @@ pipeline {
                 Location: ${params.LOCATION}
                 Environment: ${params.ENVIRONMENT}
                 
-                Azure CLI commands to manage:
+                📋 Useful Commands:
                 az group show --name ${env.RESOURCE_GROUP_CREATED}
                 az group delete --name ${env.RESOURCE_GROUP_CREATED}
                 """
@@ -178,10 +194,14 @@ pipeline {
                 └─────────────────────────────────────┘
                 
                 Please check:
-                1. VM Managed Identity is enabled
-                2. Managed Identity has Contributor role on subscription
-                3. Azure CLI version is up to date
-                4. Network connectivity to Azure
+                1. Azure CLI is installed on Jenkins agent: 'az --version'
+                2. VM Managed Identity is enabled: Check Azure Portal > VM > Identity
+                3. Managed Identity has Contributor role on subscription
+                4. Jenkins agent has network access to Azure
+                
+                Debug Commands:
+                az login --identity --debug
+                az account show
                 """
             }
         }
@@ -198,17 +218,4 @@ pipeline {
 // Helper function to check Unix/Linux environment
 def isUnix() {
     return !env.OS || env.OS.toLowerCase().contains('linux') || env.OS.toLowerCase().contains('mac')
-}
-
-// Helper function to get subscription ID
-def getSubscriptionId() {
-    try {
-        if (isUnix()) {
-            def subId = sh(script: 'az account show --query id -o tsv', returnStdout: true).trim()
-            return subId
-        }
-    } catch (Exception e) {
-        return "Unable to fetch subscription ID"
-    }
-    return "Unknown"
 }
