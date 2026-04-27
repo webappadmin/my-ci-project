@@ -1,5 +1,11 @@
 pipeline {
     agent any
+
+    // 🔥 ADD THIS TRIGGER FOR AUTOMATIC BUILDS
+    triggers {
+        // Trigger on push to main branch
+        pollSCM('H/5 * * * *')  // Polls every 5 minutes as fallback
+    }
     
     parameters {
         string(
@@ -18,6 +24,7 @@ pipeline {
             description: 'Environment type'
         )
     }
+
     
     stages {
         stage('Checkout') {
