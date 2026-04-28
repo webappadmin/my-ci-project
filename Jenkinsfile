@@ -10,7 +10,7 @@ pipeline {
     parameters {
         string(
             name: 'RESOURCE_GROUP_NAME',
-            defaultValue: 'my-resource-group',
+            defaultValue: 'my-resource-group04282025',
             description: 'Name of the Azure resource group'
         )
         string(
